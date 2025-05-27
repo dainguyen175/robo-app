@@ -1,6 +1,8 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 import 'package:permission_handler/permission_handler.dart';
+import 'control_screen.dart';
 
 void main() {
   runApp(const MyApp());
@@ -25,8 +27,9 @@ class BluetoothHomePage extends StatefulWidget {
 }
 
 class _BluetoothHomePageState extends State<BluetoothHomePage> {
-  final FlutterBluePlus flutterBlue = FlutterBluePlus.instance;
-  final List<BluetoothDevice> devicesList = [];
+  final List<ScanResult> devicesList = [];
+  StreamSubscription<List<ScanResult>>? scanSubscription;
+  bool isScanning = false;
 
   @override
   void initState() {
@@ -35,24 +38,45 @@ class _BluetoothHomePageState extends State<BluetoothHomePage> {
   }
 
   Future<void> requestPermissions() async {
+    print('Requesting permissions...');
     await [
       Permission.location,
       Permission.bluetooth,
       Permission.bluetoothScan,
       Permission.bluetoothConnect,
     ].request();
+    print('Permissions requested');
   }
 
   void startScan() {
-    devicesList.clear();
-    flutterBlue.startScan(timeout: const Duration(seconds: 4));
-    flutterBlue.scanResults.listen((results) {
-      for (var r in results) {
-        if (!devicesList.contains(r.device)) {
+    print('Scan button pressed');
+    setState(() {
+      devicesList.clear();
+      isScanning = true;
+    });
+    scanSubscription?.cancel();
+
+    FlutterBluePlus.startScan(timeout: const Duration(seconds: 10));
+
+    scanSubscription = FlutterBluePlus.scanResults.listen((results) {
+      print('Scan results received: ${results.length} devices');
+      for (ScanResult result in results) {
+        final device = result.device;
+        if (device.name.isNotEmpty && !devicesList.any((d) => d.device.id == device.id)) {
           setState(() {
-            devicesList.add(r.device);
+            devicesList.add(result);
           });
         }
+      }
+    });
+
+    Future.delayed(const Duration(seconds: 10), () {
+      if (mounted) {
+        setState(() {
+          isScanning = false;
+        });
+        FlutterBluePlus.stopScan();
+        print('Scan completed after 10 seconds');
       }
     });
   }
@@ -60,19 +84,27 @@ class _BluetoothHomePageState extends State<BluetoothHomePage> {
   Future<void> connectToDevice(BluetoothDevice device) async {
     try {
       await device.connect();
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Connected to ${device.name}')),
-      );
+      if (mounted) {
+        Navigator.push(
+          context,
+          MaterialPageRoute(
+            builder: (context) => ControlScreen(device: device),
+          ),
+        );
+      }
     } catch (e) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Error connecting to ${device.name}')),
-      );
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Error connecting to ${device.name}')),
+        );
+      }
     }
   }
 
   @override
   void dispose() {
-    flutterBlue.stopScan();
+    scanSubscription?.cancel();
+    FlutterBluePlus.stopScan();
     super.dispose();
   }
 
@@ -83,24 +115,39 @@ class _BluetoothHomePageState extends State<BluetoothHomePage> {
       body: Column(
         children: [
           ElevatedButton(
-            onPressed: startScan,
-            child: const Text('Scan Devices'),
+            onPressed: isScanning ? null : startScan,
+            child: Text(isScanning ? 'Scanning... (10s)' : 'Scan Devices'),
           ),
           Expanded(
-            child: ListView.builder(
-              itemCount: devicesList.length,
-              itemBuilder: (context, index) {
-                var device = devicesList[index];
-                return ListTile(
-                  title: Text(device.name.isEmpty ? '(unknown device)' : device.name),
-                  subtitle: Text(device.id.toString()),
-                  trailing: ElevatedButton(
-                    onPressed: () => connectToDevice(device),
-                    child: const Text('Connect'),
+            child: devicesList.isEmpty
+                ? Center(
+                    child: Text(
+                      isScanning ? 'Scanning for devices...' : 'No devices found',
+                      style: const TextStyle(fontSize: 16),
+                    ),
+                  )
+                : ListView.builder(
+                    itemCount: devicesList.length,
+                    itemBuilder: (context, index) {
+                      var result = devicesList[index];
+                      var device = result.device;
+                      return ListTile(
+                        title: Text(device.name),
+                        subtitle: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text('ID: ${device.id}'),
+                            Text('RSSI: ${result.rssi} dBm'),
+                            Text('Type: ${device.platformName}'),
+                          ],
+                        ),
+                        trailing: ElevatedButton(
+                          onPressed: () => connectToDevice(device),
+                          child: const Text('Connect'),
+                        ),
+                      );
+                    },
                   ),
-                );
-              },
-            ),
           ),
         ],
       ),
